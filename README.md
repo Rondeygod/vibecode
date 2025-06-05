@@ -11,5 +11,3 @@ Een simpele Discord muziekbot met `#` als prefix. Je kunt `#play`, `#skip`, `#pa
 3. Start de bot:
    python3 musicbot.py
 =======
-"# vibecode" 
->>>>>>> 9ae89fb836e0edc5a958cdc7fa0d54882fd884d9

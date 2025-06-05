@@ -16,7 +16,7 @@ queue = {}
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot actief als {bot.user}")
+    print(f"Bot actief als {bot.user}")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -27,7 +27,7 @@ async def on_voice_state_update(member, before, after):
     if voice_client and voice_client.channel:
         if len(voice_client.channel.members) == 1:
             await voice_client.disconnect()
-            print(f"👋 Bot leavt voice kanaal {voice_client.channel.name} (leeg)")
+            print(f"Bot verlaat voice kanaal {voice_client.channel.name} (leeg)")
 
 def get_audio_info(query):
     ydl_opts = {
@@ -93,7 +93,7 @@ async def play_next(ctx):
 @bot.command(name="play")
 async def play(ctx, *, query):
     if not ctx.author.voice:
-        await ctx.send("❌ Je moet eerst in een voice channel zitten.")
+        await ctx.send("Je moet eerst in een voice channel zitten.")
         return
 
     if ctx.voice_client is None or not ctx.voice_client.is_connected():
@@ -102,11 +102,11 @@ async def play(ctx, *, query):
     try:
         entries = get_audio_info(query)
     except Exception as e:
-        await ctx.send(f"❌ Fout bij ophalen audio: {e}")
+        await ctx.send(f"Fout bij ophalen audio: {e}")
         return
 
     if not entries:
-        await ctx.send("❌ Geen nummers gevonden.")
+        await ctx.send("Geen nummers gevonden.")
         return
 
     guild_id = ctx.guild.id
@@ -123,15 +123,15 @@ async def play(ctx, *, query):
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
     else:
-        await ctx.send(f"📥 Toegevoegd aan wachtrij: {entries[0].get('title', 'Onbekend')}")
+        await ctx.send(f"Toegevoegd aan wachtrij: {entries[0].get('title', 'Onbekend')}")
 
 @bot.command(name="skip")
 async def skip(ctx):
     if ctx.voice_client is None or not ctx.voice_client.is_playing():
-        await ctx.send("❌ Er speelt nu niks.")
+        await ctx.send("Er speelt nu niks.")
         return
 
     ctx.voice_client.stop()
-    await ctx.send("⏭️ Nummer geskipt.")
+    await ctx.send("Nummer geskipt.")
 
 bot.run(TOKEN)

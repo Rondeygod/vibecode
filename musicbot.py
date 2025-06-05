@@ -1,108 +1,134 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
+import logging
+import sys
 from dotenv import load_dotenv
-from datetime import timedelta
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="[{asctime}] [{levelname:<8}] {message}",
+    style="{"
+)
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='#', intents=intents)
 
-queue = {}
+song_queues = {}
 looping = {}
-
-def format_duration(seconds):
-    return str(timedelta(seconds=int(seconds)))
-
-def get_audio_info(query):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'noplaylist': False,
-        'extract_flat': False,
-        'ignoreerrors': True,
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
-                return [entry for entry in info['entries'] if entry]
-            return [info]
-        except Exception as e:
-            print(f"[FOUT]: {e}")
-            return []
 
 @bot.event
 async def on_ready():
-    print(f"Bot actief als {bot.user}")
+    logging.info(f"Bot actief als {bot.user}")
 
+# Auto-leave als iedereen weg is
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
-
     voice_client = discord.utils.get(bot.voice_clients, guild=member.guild)
-    if voice_client and voice_client.channel and len(voice_client.channel.members) == 1:
-        await voice_client.disconnect()
+    if voice_client and voice_client.channel:
+        if len(voice_client.channel.members) == 1:
+            await voice_client.disconnect()
+            logging.info(f"Bot verlaat voice channel {voice_client.channel.name} omdat deze leeg is")
+
+def get_audio_info(query):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': False,
+        'default_search': 'ytsearch',
+        'noplaylist': False,
+        'extract_flat': False,
+        'ignoreerrors': True,
+        'source_address': '0.0.0.0',
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            logging.info(f"Fetching info for: {query}")
+            info = ydl.extract_info(query, download=False)
+
+            if 'entries' in info:
+                songs = []
+                for entry in info['entries']:
+                    if entry is None:
+                        continue
+                    songs.append({
+                        'title': entry.get('title'),
+                        'url': entry.get('url'),
+                        'webpage_url': entry.get('webpage_url'),
+                        'duration': entry.get('duration'),
+                        'thumbnail': entry.get('thumbnail')
+                    })
+                logging.info(f"Gevonden playlist met {len(songs)} nummers.")
+                return songs
+            else:
+                logging.info("Gevonden individueel nummer.")
+                return [{
+                    'title': info.get('title'),
+                    'url': info.get('url'),
+                    'webpage_url': info.get('webpage_url'),
+                    'duration': info.get('duration'),
+                    'thumbnail': info.get('thumbnail')
+                }]
+        except Exception as e:
+            logging.error(f"Fout bij ophalen info: {e}")
+            return []
 
 async def play_next(ctx):
     guild_id = ctx.guild.id
-    voice_client = ctx.voice_client
+    vc = ctx.voice_client
 
-    if guild_id not in queue or not queue[guild_id]:
-        await voice_client.disconnect()
+    if guild_id not in song_queues or len(song_queues[guild_id]) == 0:
+        await vc.disconnect()
+        logging.info("Queue leeg, bot leavt voice.")
         return
 
-    current = queue[guild_id][0]
-    source = discord.FFmpegPCMAudio(current['url'], before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5")
+    current = song_queues[guild_id][0]
+    source = discord.FFmpegPCMAudio(current['webpage_url'], before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
 
-    def after_playing(e):
-        if e:
-            print(f"Fout bij afspelen: {e}")
-        coro = play_next(ctx)
-        fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+    def after_playing(err):
+        if err:
+            logging.error(f"Fout tijdens afspelen: {err}")
+        if not looping.get(guild_id):
+            song_queues[guild_id].pop(0)
+        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
         try:
             fut.result()
         except Exception as e:
-            print(e)
+            logging.error(f"Fout na afspelen: {e}")
 
-    voice_client.play(source, after=after_playing if not looping.get(guild_id, False) else lambda e: voice_client.play(source, after=after_playing))
+    vc.play(source, after=after_playing)
 
-    if not looping.get(guild_id, False):
-        queue[guild_id].pop(0)
+    # Embed info
+    embed = discord.Embed(title="Now Playing", description=f"[{current['title']}]({current['webpage_url']})")
+    if current.get('thumbnail'):
+        embed.set_thumbnail(url=current['thumbnail'])
+    
+    current_index = 1
+    total = len(song_queues[guild_id])
+    remaining_duration = sum(track.get('duration') or 0 for track in song_queues[guild_id][1:])
+    if current.get('duration'):
+        embed.add_field(name="Duur huidig nummer", value=f"{current['duration']//60}:{current['duration']%60:02d}")
+    embed.add_field(name="Track info", value=f"Nummer {current_index}/{total} | {remaining_duration//60}:{remaining_duration%60:02d} resterend")
 
-    now_playing_index = 1 if not looping.get(guild_id, False) else 0
-    total_tracks = len(queue[guild_id]) + 1
-    remaining_duration = sum(float(song.get('duration', 0)) for song in queue[guild_id])
-
-    embed = discord.Embed(
-        title="Now Playing",
-        description=f"{current['title']}",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Track", value=f"{now_playing_index}/{total_tracks}")
-    embed.add_field(name="Duur", value=format_duration(current.get('duration', 0)))
-    embed.add_field(name="Queue Resterend", value=format_duration(remaining_duration))
-    if current.get("thumbnail"):
-        embed.set_thumbnail(url=current["thumbnail"])
     await ctx.send(embed=embed)
 
-@bot.command()
+@bot.command(name='play')
 async def play(ctx, *, query):
-    if not ctx.author.voice:
+    if ctx.author.voice is None:
         await ctx.send("Je zit niet in een voicekanaal.")
         return
 
-    try:
-        await ctx.author.voice.channel.connect()
-    except discord.ClientException:
-        pass  # already connected
+    voice_channel = ctx.author.voice.channel
+    if ctx.voice_client is None or not ctx.voice_client.is_connected():
+        await voice_channel.connect()
 
     songs = get_audio_info(query)
     if not songs:
@@ -110,80 +136,41 @@ async def play(ctx, *, query):
         return
 
     guild_id = ctx.guild.id
-    if guild_id not in queue:
-        queue[guild_id] = []
+    if guild_id not in song_queues:
+        song_queues[guild_id] = []
 
-    for song in songs:
-        queue[guild_id].append({
-            'title': song.get('title'),
-            'url': song.get('url'),
-            'thumbnail': song.get('thumbnail'),
-            'duration': song.get('duration', 0)
-        })
-
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx)
-    else:
-        await ctx.send(f"Toegevoegd aan wachtrij: {songs[0].get('title')}")
-
-@bot.command()
-async def playlist(ctx, *, query):
-    if not ctx.author.voice:
-        await ctx.send("Je zit niet in een voicekanaal.")
-        return
-
-    try:
-        await ctx.author.voice.channel.connect()
-    except discord.ClientException:
-        pass  # already connected
-
-
-    songs = get_audio_info(query)
-    if not songs:
-        await ctx.send("Geen nummers gevonden.")
-        return
-
-    guild_id = ctx.guild.id
-    if guild_id not in queue:
-        queue[guild_id] = []
-
-    added = 0
-    for song in songs:
-        if song and song.get('url'):
-            queue[guild_id].append({
-                'title': song.get('title'),
-                'url': song.get('url'),
-                'thumbnail': song.get('thumbnail'),
-                'duration': song.get('duration', 0)
-            })
-            added += 1
-
-    await ctx.send(f"{added} nummers toegevoegd aan de wachtrij.")
+    song_queues[guild_id].extend(songs)
+    await ctx.send(f"{len(songs)} nummer(s) toegevoegd.")
 
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
 
-@bot.command()
+@bot.command(name='skip')
 async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("Nummer overgeslagen.")
-    else:
-        await ctx.send("Er speelt momenteel niets af.")
+    if ctx.voice_client is None or not ctx.voice_client.is_playing():
+        await ctx.send("Er speelt nu niets.")
+        return
+    ctx.voice_client.stop()
+    await ctx.send("Nummer overgeslagen.")
 
-@bot.command()
+@bot.command(name='clear')
 async def clear(ctx):
     guild_id = ctx.guild.id
-    if guild_id in queue:
-        queue[guild_id].clear()
-        await ctx.send("Wachtrij is leeggemaakt.")
+    song_queues[guild_id] = []
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+    await ctx.send("Wachtrij geleegd.")
 
-@bot.command()
+@bot.command(name='loop')
 async def loop(ctx):
     guild_id = ctx.guild.id
-    current_state = looping.get(guild_id, False)
-    looping[guild_id] = not current_state
-    status = "aangezet" if not current_state else "uitgezet"
-    await ctx.send(f"Loop is {status}.")
+    looping[guild_id] = not looping.get(guild_id, False)
+    await ctx.send(f"Loopmodus: {'aan' if looping[guild_id] else 'uit'}")
+
+@bot.command(name='restart')
+async def restart(ctx):
+    await ctx.send("Herstarten...")
+    logging.info("Script wordt herstart.")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 bot.run(TOKEN)

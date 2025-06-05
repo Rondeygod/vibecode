@@ -3,7 +3,6 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
-from functools import partial
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,7 +26,7 @@ async def on_voice_state_update(member, before, after):
     if voice_client and voice_client.channel:
         if len(voice_client.channel.members) == 1:
             await voice_client.disconnect()
-            print(f"👋 Bot leavt voice kanaal {voice_client.channel.name} (leeg)")
+            print(f"👋 Bot verlaat voice kanaal {voice_client.channel.name} (leeg)")
 
 def get_audio_info(query):
     ydl_opts = {

@@ -1,4 +1,3 @@
-import sys
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -14,9 +13,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-# Logging instellen
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
-logging.getLogger("yt_dlp").setLevel(logging.WARNING)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='#', intents=intents)
@@ -24,7 +21,6 @@ bot = commands.Bot(command_prefix='#', intents=intents)
 queue = {}
 looping = {}
 
-# Spotify setup
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET
@@ -54,17 +50,20 @@ def format_duration(seconds):
     sec = seconds % 60
     return f"{minutes}:{sec:02d}"
 
-def get_audio_info(query, first_only=False):
+def make_progress_bar(current, total, bar_length=20):
+    progress = int(bar_length * current / total)
+    bar = '█' * progress + '░' * (bar_length - progress)
+    return bar
+
+def get_audio_info(query):
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'default_search': 'ytsearch',
-        'noplaylist': not first_only,
-        'extract_flat': 'in_playlist' if first_only else False,
+        'noplaylist': False,
+        'extract_flat': False,
         'ignoreerrors': True,
         'source_address': '0.0.0.0',
-        'logger': logging.getLogger("yt_dlp"),
-        'outtmpl': '%(id)s.%(ext)s'
     }
 
     if is_spotify_url(query):
@@ -77,22 +76,27 @@ def get_audio_info(query, first_only=False):
         for q in queries:
             try:
                 info = ydl.extract_info(q, download=False)
-                entries = info.get('entries', [info])
-                for entry in entries:
-                    if not entry or not entry.get('url'):
-                        logging.warning("Ongeldige of lege entry overgeslagen.")
-                        continue
+                if 'entries' in info:
+                    for entry in info['entries']:
+                        if entry is None:
+                            continue
+                        results.append({
+                            'title': entry.get('title', 'Onbekend'),
+                            'url': entry.get('url') or entry.get('webpage_url'),
+                            'webpage_url': entry.get('webpage_url'),
+                            'duration': entry.get('duration', 0),
+                            'thumbnail': entry.get('thumbnail', None)
+                        })
+                else:
                     results.append({
-                        'title': entry.get('title', 'Onbekend'),
-                        'url': entry.get('url') or entry.get('webpage_url'),
-                        'webpage_url': entry.get('webpage_url'),
-                        'duration': entry.get('duration', 0),
-                        'thumbnail': entry.get('thumbnail')
+                        'title': info.get('title', 'Onbekend'),
+                        'url': info.get('url') or info.get('webpage_url'),
+                        'webpage_url': info.get('webpage_url'),
+                        'duration': info.get('duration', 0),
+                        'thumbnail': info.get('thumbnail', None)
                     })
-                    if first_only:
-                        break
             except Exception as e:
-                logging.warning(f"Fout bij ophalen info: {e}")
+                logging.warning(f"[FOUT] Kan '{q}' niet verwerken: {e}")
     return results
 
 async def play_next(ctx):
@@ -104,20 +108,38 @@ async def play_next(ctx):
 
     song = queue[guild_id][0]
     logging.info(f"Speelt af: {song['title']} - {song['url']}")
-
     source = discord.FFmpegPCMAudio(song['webpage_url'], before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
     ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
 
     total_songs = len(queue[guild_id])
     remaining_time = sum(s.get('duration', 0) for s in queue[guild_id][1:])
+    duration = song.get('duration') or 1
 
     embed = discord.Embed(title="Now Playing", description=f"[{song['title']}]({song['webpage_url']})")
-    embed.add_field(name="Duur huidig nummer", value=format_duration(song['duration']), inline=True)
+    embed.add_field(name="Duur huidig nummer", value=format_duration(duration), inline=True)
     embed.add_field(name="Track info", value=f"Nummer 1/{total_songs} | {format_duration(remaining_time)} resterend", inline=True)
     if song.get('thumbnail'):
         embed.set_thumbnail(url=song['thumbnail'])
 
-    await ctx.send(embed=embed)
+    message = await ctx.send(embed=embed)
+
+    async def update_progress():
+        elapsed = 0
+        while elapsed < duration and ctx.voice_client.is_playing():
+            await asyncio.sleep(5)
+            elapsed += 5
+            bar = make_progress_bar(elapsed, duration)
+            embed.description = f"[{song['title']}]({song['webpage_url']})\n{bar} {format_duration(elapsed)} / {format_duration(duration)}"
+            try:
+                await message.edit(embed=embed)
+            except discord.HTTPException:
+                break
+
+    asyncio.create_task(update_progress())
+
+def reset_queue(guild_id):
+    queue[guild_id] = []
+    looping[guild_id] = False
 
 async def handle_song_end(ctx):
     guild_id = ctx.guild.id
@@ -130,10 +152,6 @@ async def handle_song_end(ctx):
         await play_next(ctx)
     else:
         await ctx.voice_client.disconnect()
-
-def reset_queue(guild_id):
-    queue[guild_id] = []
-    looping[guild_id] = False
 
 @bot.event
 async def on_ready():
@@ -153,21 +171,15 @@ async def play(ctx, *, query):
     if guild_id not in queue:
         reset_queue(guild_id)
 
-    songs = get_audio_info(query, first_only=True)
+    songs = get_audio_info(query)
     if not songs:
         await ctx.send("Geen nummers gevonden.")
         return
 
     queue[guild_id].extend(songs)
+
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
-
-    # Laad resterende tracks op achtergrond
-    async def load_remaining():
-        rest = get_audio_info(query, first_only=False)
-        if len(rest) > 1:
-            queue[guild_id].extend(rest[1:])
-    asyncio.create_task(load_remaining())
 
 @bot.command()
 async def skip(ctx):
@@ -178,8 +190,6 @@ async def skip(ctx):
 @bot.command()
 async def clear(ctx):
     reset_queue(ctx.guild.id)
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
     await ctx.send("Wachtrij geleegd.")
 
 @bot.command()

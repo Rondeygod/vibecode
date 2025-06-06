@@ -4,6 +4,7 @@ import yt_dlp
 import asyncio
 import os
 import logging
+import sys
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from dotenv import load_dotenv
@@ -35,14 +36,26 @@ def get_spotify_tracks(url):
         track = sp.track(url)
         results.append(f"{track['artists'][0]['name']} - {track['name']}")
     elif 'playlist' in url:
-        playlist = sp.playlist_tracks(url)
-        for item in playlist['items']:
-            track = item['track']
-            results.append(f"{track['artists'][0]['name']} - {track['name']}")
+        playlist_id = url.split("playlist/")[-1].split("?")[0]
+        offset = 0
+        while True:
+            playlist = sp.playlist_items(playlist_id, offset=offset)
+            for item in playlist['items']:
+                track = item['track']
+                results.append(f"{track['artists'][0]['name']} - {track['name']}")
+            if playlist['next'] is None:
+                break
+            offset += len(playlist['items'])
     elif 'album' in url:
-        album = sp.album_tracks(url)
-        for item in album['items']:
-            results.append(f"{item['artists'][0]['name']} - {item['name']}")
+        album_id = url.split("album/")[-1].split("?")[0]
+        offset = 0
+        while True:
+            album = sp.album_tracks(album_id, offset=offset)
+            for item in album['items']:
+                results.append(f"{item['artists'][0]['name']} - {item['name']}")
+            if album['next'] is None:
+                break
+            offset += len(album['items'])
     return results
 
 def format_duration(seconds):

@@ -1,28 +1,30 @@
-import sys
 import discord
 from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
 import logging
-import sys
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from dotenv import load_dotenv
+from collections import deque
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
+# Setup logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='#', intents=intents)
 
-queue = {}
+queue = {}  # Per-guild queue
 looping = {}
 
+# Spotify setup
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET
@@ -33,30 +35,21 @@ def is_spotify_url(url):
 
 def get_spotify_tracks(url):
     results = []
-    if 'track' in url:
-        track = sp.track(url)
-        results.append(f"{track['artists'][0]['name']} - {track['name']}")
-    elif 'playlist' in url:
-        playlist_id = url.split("playlist/")[-1].split("?")[0]
-        offset = 0
-        while True:
-            playlist = sp.playlist_items(playlist_id, offset=offset)
+    try:
+        if 'track' in url:
+            track = sp.track(url)
+            results.append(f"{track['artists'][0]['name']} - {track['name']}")
+        elif 'playlist' in url:
+            playlist = sp.playlist_tracks(url)
             for item in playlist['items']:
                 track = item['track']
                 results.append(f"{track['artists'][0]['name']} - {track['name']}")
-            if playlist['next'] is None:
-                break
-            offset += len(playlist['items'])
-    elif 'album' in url:
-        album_id = url.split("album/")[-1].split("?")[0]
-        offset = 0
-        while True:
-            album = sp.album_tracks(album_id, offset=offset)
+        elif 'album' in url:
+            album = sp.album_tracks(url)
             for item in album['items']:
                 results.append(f"{item['artists'][0]['name']} - {item['name']}")
-            if album['next'] is None:
-                break
-            offset += len(album['items'])
+    except Exception as e:
+        logger.warning(f"Spotify fout: {e}")
     return results
 
 def format_duration(seconds):
@@ -110,19 +103,22 @@ def get_audio_info(query):
                         'thumbnail': info.get('thumbnail', None)
                     })
             except Exception as e:
-                logging.warning(f"[FOUT] Kan '{q}' niet verwerken: {e}")
+                logger.warning(f"[FOUT] Kan '{q}' niet verwerken: {e}")
     return results
+
+def reset_queue(guild_id):
+    queue[guild_id] = deque()
+    looping[guild_id] = False
 
 async def play_next(ctx):
     guild_id = ctx.guild.id
     if not queue[guild_id]:
         await ctx.voice_client.disconnect()
-        logging.info("Queue leeg, bot leavt voice.")
+        logger.info("Queue leeg, bot leavt voice.")
         return
 
     song = queue[guild_id][0]
 
-    #Haal de echte streambare URL op
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
@@ -136,19 +132,18 @@ async def play_next(ctx):
             info = ydl.extract_info(song['webpage_url'], download=False)
             stream_url = info.get('url')
     except Exception as e:
-        logging.error(f"Kon stream URL niet ophalen: {e}")
-        queue[guild_id].pop(0)
+        logger.error(f"Kon stream URL niet ophalen: {e}")
+        queue[guild_id].popleft()
         await play_next(ctx)
         return
 
-    logging.info(f"Speelt af: {song['title']} - {stream_url}")
+    logger.info(f"Speelt af: {song['title']} - {stream_url}")
     source = discord.FFmpegPCMAudio(stream_url, before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
     ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
 
-    # Embed
     duration = song.get('duration') or 1
     total_songs = len(queue[guild_id])
-    remaining_time = sum(s.get('duration', 0) for s in queue[guild_id][1:])
+    remaining_time = sum(s.get('duration', 0) for s in list(queue[guild_id])[1:])
 
     embed = discord.Embed(title="Now Playing", description=f"[{song['title']}]({song['webpage_url']})")
     embed.add_field(name="Duur huidig nummer", value=format_duration(duration), inline=True)
@@ -172,16 +167,12 @@ async def play_next(ctx):
 
     asyncio.create_task(update_progress())
 
-def reset_queue(guild_id):
-    queue[guild_id] = []
-    looping[guild_id] = False
-
 async def handle_song_end(ctx):
     guild_id = ctx.guild.id
     if looping.get(guild_id, False):
-        queue[guild_id].append(queue[guild_id].pop(0))
+        queue[guild_id].append(queue[guild_id].popleft())
     else:
-        queue[guild_id].pop(0)
+        queue[guild_id].popleft()
 
     if queue[guild_id]:
         await play_next(ctx)
@@ -190,7 +181,7 @@ async def handle_song_end(ctx):
 
 @bot.event
 async def on_ready():
-    logging.info(f"Bot actief als {bot.user}")
+    logger.info(f"Bot actief als {bot.user}")
 
 @bot.command()
 async def play(ctx, *, query):
@@ -232,11 +223,5 @@ async def loop(ctx):
     guild_id = ctx.guild.id
     looping[guild_id] = not looping.get(guild_id, False)
     await ctx.send(f"Looping staat nu op: {looping[guild_id]}")
-
-@bot.command()
-async def restart(ctx):
-    await ctx.send("Bot herstart...")
-    logging.info("Script wordt herstart.")
-    os.execv(sys.executable, ['python'] + sys.argv)
 
 bot.run(TOKEN)

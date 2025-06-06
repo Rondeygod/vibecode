@@ -1,3 +1,4 @@
+import sys
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -107,13 +108,34 @@ async def play_next(ctx):
         return
 
     song = queue[guild_id][0]
-    logging.info(f"Speelt af: {song['title']} - {song['url']}")
-    source = discord.FFmpegPCMAudio(song['webpage_url'], before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
+
+    #Haal de echte streambare URL op
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'default_search': 'ytsearch',
+        'noplaylist': True,
+        'extract_flat': 'in_playlist',
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(song['webpage_url'], download=False)
+            stream_url = info.get('url')
+    except Exception as e:
+        logging.error(f"Kon stream URL niet ophalen: {e}")
+        queue[guild_id].pop(0)
+        await play_next(ctx)
+        return
+
+    logging.info(f"Speelt af: {song['title']} - {stream_url}")
+    source = discord.FFmpegPCMAudio(stream_url, before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
     ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
 
+    # Embed
+    duration = song.get('duration') or 1
     total_songs = len(queue[guild_id])
     remaining_time = sum(s.get('duration', 0) for s in queue[guild_id][1:])
-    duration = song.get('duration') or 1
 
     embed = discord.Embed(title="Now Playing", description=f"[{song['title']}]({song['webpage_url']})")
     embed.add_field(name="Duur huidig nummer", value=format_duration(duration), inline=True)

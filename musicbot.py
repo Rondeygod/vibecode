@@ -14,9 +14,13 @@ from utils.queue_manager import (
     queue_length, get_total_duration
 )
 from utils.embed_builder import send_now_playing, update_progress_bar
+from utils.audio_utils import format_duration, make_progress_bar, get_ffmpeg_audio_source
+
+import yt_dlp
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+COOKIES_PATH = "cookies.txt"
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -72,8 +76,6 @@ async def play_next(ctx):
 
     song = peek_next_song(guild_id)
 
-    import yt_dlp
-    COOKIES_PATH = "cookies.txt"
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
@@ -93,7 +95,7 @@ async def play_next(ctx):
         return
 
     logger.info(f"Speelt af: {song['title']} - {stream_url}")
-    source = discord.FFmpegPCMAudio(stream_url, before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
+    source = get_ffmpeg_audio_source(stream_url)
     ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
 
     message = await send_now_playing(ctx, song, queue_length(guild_id), get_total_duration(guild_id))
@@ -126,6 +128,32 @@ async def skip(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("Nummer geskipt.")
+
+@bot.command()
+async def stop(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("Muziek gestopt en kanaal verlaten.")
+
+@bot.command()
+async def np(ctx):
+    song = peek_next_song(ctx.guild.id)
+    if song:
+        await send_now_playing(ctx, song, queue_length(ctx.guild.id), get_total_duration(ctx.guild.id))
+    else:
+        await ctx.send("Er wordt momenteel niets afgespeeld.")
+
+@bot.command()
+async def queue(ctx):
+    q = get_queue(ctx.guild.id)
+    if not q:
+        await ctx.send("De wachtrij is leeg.")
+        return
+
+    embed = discord.Embed(title="Wachtrij", description="Aankomende nummers:")
+    for i, song in enumerate(list(q)[:10], start=1):
+        embed.add_field(name=f"{i}. {song['title']}", value=song['webpage_url'], inline=False)
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def clear(ctx):

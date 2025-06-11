@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 COOKIES_PATH = "cookies.txt"
 
 def get_audio_info(queries):
+    if isinstance(queries, str):
+        queries = [queries]
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,

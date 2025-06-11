@@ -1,5 +1,4 @@
 # playlist_handler.py
-from youtube_handler import get_audio_info
 
 def flatten_playlist(entries):
     """

@@ -10,11 +10,10 @@ from youtube_handler import get_audio_info
 from playlist_handler import flatten_playlist, filter_valid_tracks
 from utils.queue_manager import (
     get_queue, reset_queue, add_to_queue, pop_next_song,
-    peek_next_song, is_looping, toggle_looping, has_next,
-    queue_length, get_total_duration
+    peek_next_song, is_looping, toggle_looping, has_next
 )
 from utils.embed_builder import send_now_playing, update_progress_bar
-from utils.audio_utils import format_duration, make_progress_bar, get_ffmpeg_audio_source
+from utils.audio_utils import get_ffmpeg_audio_source
 
 import yt_dlp
 
@@ -43,8 +42,7 @@ async def play(ctx, *, query):
         await voice_channel.connect()
 
     guild_id = ctx.guild.id
-    if guild_id not in get_queue(guild_id):
-        reset_queue(guild_id)
+    get_queue(guild_id)
 
     if is_spotify_url(query):
         queries = get_spotify_tracks(query)
@@ -98,7 +96,7 @@ async def play_next(ctx):
     source = get_ffmpeg_audio_source(stream_url)
     ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
 
-    message = await send_now_playing(ctx, song, queue_length(guild_id), get_total_duration(guild_id))
+    message = await send_now_playing(ctx, song)
 
     async def update_progress():
         elapsed = 0
@@ -139,7 +137,7 @@ async def stop(ctx):
 async def np(ctx):
     song = peek_next_song(ctx.guild.id)
     if song:
-        await send_now_playing(ctx, song, queue_length(ctx.guild.id), get_total_duration(ctx.guild.id))
+        await send_now_playing(ctx, song)
     else:
         await ctx.send("Er wordt momenteel niets afgespeeld.")
 

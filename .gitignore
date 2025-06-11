@@ -3,3 +3,4 @@ discord.env
 __pycache__/
 *.pyc
 .cache
+cookies.txt

@@ -1,6 +1,4 @@
 # playlist_handler.py
-from youtube_handler import get_audio_info
-
 def flatten_playlist(entries):
     """
     Neemt een lijst met yt-dlp resultaten (soms nested) en retourneert een platte lijst van tracks.

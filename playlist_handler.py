@@ -1,22 +1,27 @@
-# playlist_handler.py
-from youtube_handler import get_audio_info
-
 def flatten_playlist(entries):
     """
-    Neemt een lijst met yt-dlp resultaten (soms nested) en retourneert een platte lijst van tracks.
+    Zet een lijst met yt-dlp resultaten om naar een platte lijst van tracks.
+    Gaat ook om met geneste playlist-structuren (zoals 'entries' binnen een playlist).
     """
-    tracks = []
+    flat_tracks = []
+
     for item in entries:
-        if isinstance(item, dict) and 'entries' in item:
-            for sub in item['entries']:
+        if not item or not isinstance(item, dict):
+            continue
+
+        nested_entries = item.get('entries')
+        if nested_entries and isinstance(nested_entries, list):
+            for sub in nested_entries:
                 if sub and isinstance(sub, dict):
-                    tracks.append(sub)
-        elif item and isinstance(item, dict):
-            tracks.append(item)
-    return tracks
+                    flat_tracks.append(sub)
+        else:
+            flat_tracks.append(item)
+
+    return flat_tracks
+
 
 def filter_valid_tracks(info_list):
     """
-    Filter lege of foutieve tracks uit de lijst.
+    Filtert tracks zonder geldige URL (zoals mislukte yt-dlp entries).
     """
-    return [entry for entry in info_list if entry and entry.get("url")]
+    return [entry for entry in info_list if isinstance(entry, dict) and entry.get("url")]

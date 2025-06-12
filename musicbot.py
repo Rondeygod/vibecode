@@ -13,7 +13,7 @@ from utils.queue_manager import (
     peek_next_song, is_looping, toggle_looping, has_next
 )
 from utils.embed_builder import send_now_playing, update_progress_bar
-from utils.audio_utils import get_ffmpeg_audio_source
+from utils.audio_utils import format_duration, get_ffmpeg_audio_source
 
 import yt_dlp
 
@@ -60,6 +60,10 @@ async def play(ctx, *, query):
         await ctx.send("Geen nummers gevonden.")
         return
 
+    # Voeg de aanvrager toe aan elk nummer
+    for song in songs:
+        song['requester'] = str(ctx.author)
+
     add_to_queue(guild_id, songs)
 
     if not ctx.voice_client.is_playing():
@@ -86,6 +90,8 @@ async def play_next(ctx):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(song['webpage_url'], download=False)
             stream_url = info.get('url')
+            if not stream_url:
+                raise Exception("Geen stream-URL gevonden")
     except Exception as e:
         logger.error(f"Kon stream URL niet ophalen: {e}")
         pop_next_song(guild_id)
@@ -94,7 +100,17 @@ async def play_next(ctx):
 
     logger.info(f"Speelt af: {song['title']} - {stream_url}")
     source = get_ffmpeg_audio_source(stream_url)
-    ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop))
+
+    def after_playing(error):
+        if error:
+            logger.error(f"Fout tijdens afspelen: {error}")
+        fut = asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            logger.error(f"Fout in after_playing: {e}")
+
+    ctx.voice_client.play(source, after=after_playing)
 
     message = await send_now_playing(ctx, song)
 
@@ -149,8 +165,22 @@ async def queue(ctx):
         return
 
     embed = discord.Embed(title="Wachtrij", description="Aankomende nummers:")
+
+    total = 0
     for i, song in enumerate(list(q)[:10], start=1):
-        embed.add_field(name=f"{i}. {song['title']}", value=song['webpage_url'], inline=False)
+        title = song['title']
+        url = song['webpage_url']
+        duration = format_duration(song.get('duration', 0))
+        requester = song.get('requester', "Onbekend")
+        total += song.get('duration', 0)
+
+        embed.add_field(
+            name=f"{i}. {title}",
+            value=f"[Link]({url}) | Duur: {duration} | Door: {requester}",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Totale wachttijd: {format_duration(total)}")
     await ctx.send(embed=embed)
 
 @bot.command()

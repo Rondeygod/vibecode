@@ -1,12 +1,11 @@
-# spotify_handler.py
-
+import os
+import logging
+from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import os
-from dotenv import load_dotenv
-import logging
 
 load_dotenv()
+
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
@@ -18,35 +17,55 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 ))
 
 def is_spotify_url(url):
+    """Controleert of de URL een Spotify-link is."""
     return 'open.spotify.com' in url
 
+
+def extract_spotify_id(url, content_type):
+    """Extraheert het ID uit een Spotify-URL voor een bepaald type (track/playlist/album)."""
+    try:
+        return url.split(f"{content_type}/")[-1].split("?")[0]
+    except IndexError:
+        return None
+
+
 def get_spotify_tracks(url):
+    """
+    Zet een Spotify-track, playlist of album om naar een lijst van 'Artiest - Titel' strings.
+    Wordt gebruikt voor YouTube-zoekopdrachten.
+    """
     results = []
+
     try:
         if 'track' in url:
             track = sp.track(url)
             results.append(f"{track['artists'][0]['name']} - {track['name']}")
+
         elif 'playlist' in url:
-            playlist_id = url.split("playlist/")[-1].split("?")[0]
+            playlist_id = extract_spotify_id(url, 'playlist')
             offset = 0
             while True:
-                playlist = sp.playlist_items(playlist_id, offset=offset)
-                for item in playlist['items']:
-                    track = item['track']
-                    results.append(f"{track['artists'][0]['name']} - {track['name']}")
-                if playlist['next'] is None:
+                items = sp.playlist_items(playlist_id, offset=offset)
+                for item in items.get('items', []):
+                    track = item.get('track')
+                    if track:
+                        results.append(f"{track['artists'][0]['name']} - {track['name']}")
+                if not items.get('next'):
                     break
-                offset += len(playlist['items'])
+                offset += len(items.get('items', []))
+
         elif 'album' in url:
-            album_id = url.split("album/")[-1].split("?")[0]
+            album_id = extract_spotify_id(url, 'album')
             offset = 0
             while True:
-                album = sp.album_tracks(album_id, offset=offset)
-                for item in album['items']:
-                    results.append(f"{item['artists'][0]['name']} - {item['name']}")
-                if album['next'] is None:
+                items = sp.album_tracks(album_id, offset=offset)
+                for track in items.get('items', []):
+                    results.append(f"{track['artists'][0]['name']} - {track['name']}")
+                if not items.get('next'):
                     break
-                offset += len(album['items'])
+                offset += len(items.get('items', []))
+
     except Exception as e:
-        logger.warning(f"Spotify fout: {e}")
+        logger.warning(f"[Spotify] Fout bij ophalen tracks: {e}")
+
     return results

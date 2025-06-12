@@ -47,11 +47,16 @@ async def play_command(ctx, *, query):
 @bot.tree.command(name="play", description="Speel een nummer af vanaf YouTube of Spotify")
 @app_commands.describe(query="YouTube link, titel of Spotify-link")
 async def slash_play(interaction: discord.Interaction, query: str):
-    ctx = await commands.Context.from_interaction(interaction)
-    ctx.author = interaction.user
-    ctx.send = lambda content=None, *, embed=None: interaction.response.send_message(content=content, embed=embed, ephemeral=False)
-    await play(ctx, query=query)
+        ctx = await commands.Context.from_interaction(interaction)
+        ctx.author = interaction.user
 
+        # Eerst: reageer snel op de interaction
+        await interaction.response.defer(thinking=True)
+
+        # Daarna: laat ctx.send() doorsturen naar followup
+        ctx.send = lambda content=None, *, embed=None: interaction.followup.send(content=content, embed=embed, ephemeral=False)
+
+        await play(ctx, query=query)
 
 async def play(ctx, query):
     if not ctx.author.voice:
@@ -69,10 +74,11 @@ async def play(ctx, query):
 
     songs = []
     for q in queries:
-        tracks = get_audio_info(q)
+        tracks = await get_audio_info([q])
         flat_tracks = flatten_playlist(tracks)
         valid_tracks = filter_valid_tracks(flat_tracks)
         songs.extend(valid_tracks)
+
 
     if not songs:
         await ctx.send("Geen nummers gevonden.")
@@ -134,11 +140,15 @@ async def play_next(ctx):
     def after_playing(error):
         if error:
             logger.error(f"Fout tijdens afspelen: {error}")
-        fut = asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop)
-        try:
-            fut.result()
-        except Exception as e:
-            logger.error(f"Fout in after_playing: {e}")
+        elif not ctx.voice_client or not ctx.voice_client.is_connected():
+            logger.warning("Niet verbonden met voice bij einde nummer.")
+        else:
+            fut = asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop)
+            try:
+                fut.result()
+            except Exception as e:
+                logger.error(f"Fout in after_playing: {e}")
+
 
     ctx.voice_client.play(source, after=after_playing)
     message = await send_now_playing(ctx, song)

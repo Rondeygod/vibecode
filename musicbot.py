@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import asyncio
 import logging
 import os
@@ -27,27 +28,44 @@ logger = logging.getLogger(__name__)
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='#', intents=intents)
 
+
 @bot.event
 async def on_ready():
     logger.info(f"Bot actief als {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Slash commands gesynchroniseerd: {len(synced)}")
+    except Exception as e:
+        logger.error(f"Fout bij slash command sync: {e}")
 
-@bot.command()
-async def play(ctx, *, query):
+
+@bot.command(name="play")
+async def play_command(ctx, *, query):
+    await play(ctx, query=query)
+
+
+@bot.tree.command(name="play", description="Speel een nummer af vanaf YouTube of Spotify")
+@app_commands.describe(query="YouTube link, titel of Spotify-link")
+async def slash_play(interaction: discord.Interaction, query: str):
+    ctx = await commands.Context.from_interaction(interaction)
+    ctx.author = interaction.user
+    ctx.send = lambda content=None, *, embed=None: interaction.response.send_message(content=content, embed=embed, ephemeral=False)
+    await play(ctx, query=query)
+
+
+async def play(ctx, query):
     if not ctx.author.voice:
         await ctx.send("Je moet eerst in een voicekanaal zitten.")
         return
 
     voice_channel = ctx.author.voice.channel
-    if ctx.voice_client is None:
+    if ctx.voice_client is None or not ctx.voice_client.is_connected():
         await voice_channel.connect()
 
     guild_id = ctx.guild.id
     get_queue(guild_id)
 
-    if is_spotify_url(query):
-        queries = get_spotify_tracks(query)
-    else:
-        queries = [query]
+    queries = get_spotify_tracks(query) if is_spotify_url(query) else [query]
 
     songs = []
     for q in queries:
@@ -60,14 +78,26 @@ async def play(ctx, *, query):
         await ctx.send("Geen nummers gevonden.")
         return
 
-    # Voeg de aanvrager toe aan elk nummer
     for song in songs:
         song['requester'] = str(ctx.author)
 
     add_to_queue(guild_id, songs)
 
+    # Embed-output
+    first_song = songs[0]
+    embed = discord.Embed(title="🎶 Toegevoegd aan de wachtrij",
+                          description=f"[{first_song['title']}]({first_song['webpage_url']})",
+                          color=discord.Color.blue())
+    embed.add_field(name="Duur", value=format_duration(first_song.get("duration", 0)), inline=True)
+    embed.add_field(name="Aangevraagd door", value=str(ctx.author), inline=True)
+    if first_song.get("thumbnail"):
+        embed.set_thumbnail(url=first_song["thumbnail"])
+
+    await ctx.send(embed=embed)
+
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
+
 
 async def play_next(ctx):
     guild_id = ctx.guild.id
@@ -111,7 +141,6 @@ async def play_next(ctx):
             logger.error(f"Fout in after_playing: {e}")
 
     ctx.voice_client.play(source, after=after_playing)
-
     message = await send_now_playing(ctx, song)
 
     async def update_progress():
@@ -123,6 +152,7 @@ async def play_next(ctx):
             await update_progress_bar(message, song, elapsed)
 
     asyncio.create_task(update_progress())
+
 
 async def handle_song_end(ctx):
     guild_id = ctx.guild.id
@@ -137,17 +167,20 @@ async def handle_song_end(ctx):
     else:
         await ctx.voice_client.disconnect()
 
+
 @bot.command()
 async def skip(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("Nummer geskipt.")
 
+
 @bot.command()
 async def stop(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("Muziek gestopt en kanaal verlaten.")
+
 
 @bot.command()
 async def np(ctx):
@@ -157,6 +190,7 @@ async def np(ctx):
     else:
         await ctx.send("Er wordt momenteel niets afgespeeld.")
 
+
 @bot.command()
 async def queue(ctx):
     q = get_queue(ctx.guild.id)
@@ -165,7 +199,6 @@ async def queue(ctx):
         return
 
     embed = discord.Embed(title="Wachtrij", description="Aankomende nummers:")
-
     total = 0
     for i, song in enumerate(list(q)[:10], start=1):
         title = song['title']
@@ -183,14 +216,26 @@ async def queue(ctx):
     embed.set_footer(text=f"Totale wachttijd: {format_duration(total)}")
     await ctx.send(embed=embed)
 
+
 @bot.command()
 async def clear(ctx):
     reset_queue(ctx.guild.id)
     await ctx.send("Wachtrij geleegd.")
 
+
 @bot.command()
 async def loop(ctx):
     state = toggle_looping(ctx.guild.id)
     await ctx.send(f"Looping staat nu op: {state}")
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    voice_client = discord.utils.get(bot.voice_clients, guild=member.guild)
+    if voice_client and voice_client.is_connected():
+        if len(voice_client.channel.members) == 1:
+            await voice_client.disconnect()
+            logger.info(f"Voicekanaal verlaten in guild {member.guild.name} omdat het leeg was.")
+
 
 bot.run(TOKEN)

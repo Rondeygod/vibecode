@@ -47,16 +47,12 @@ async def play_command(ctx, *, query):
 @bot.tree.command(name="play", description="Speel een nummer af vanaf YouTube of Spotify")
 @app_commands.describe(query="YouTube link, titel of Spotify-link")
 async def slash_play(interaction: discord.Interaction, query: str):
-        ctx = await commands.Context.from_interaction(interaction)
-        ctx.author = interaction.user
+    ctx = await commands.Context.from_interaction(interaction)
+    ctx.author = interaction.user
+    await interaction.response.defer(thinking=True)
+    ctx.send = lambda content=None, *, embed=None: interaction.followup.send(content=content, embed=embed, ephemeral=False)
+    await play(ctx, query=query)
 
-        # Eerst: reageer snel op de interaction
-        await interaction.response.defer(thinking=True)
-
-        # Daarna: laat ctx.send() doorsturen naar followup
-        ctx.send = lambda content=None, *, embed=None: interaction.followup.send(content=content, embed=embed, ephemeral=False)
-
-        await play(ctx, query=query)
 
 async def play(ctx, query):
     if not ctx.author.voice:
@@ -79,7 +75,6 @@ async def play(ctx, query):
         valid_tracks = filter_valid_tracks(flat_tracks)
         songs.extend(valid_tracks)
 
-
     if not songs:
         await ctx.send("Geen nummers gevonden.")
         return
@@ -89,7 +84,6 @@ async def play(ctx, query):
 
     add_to_queue(guild_id, songs)
 
-    # Embed-output
     first_song = songs[0]
     embed = discord.Embed(title="🎶 Toegevoegd aan de wachtrij",
                           description=f"[{first_song['title']}]({first_song['webpage_url']})",
@@ -149,7 +143,6 @@ async def play_next(ctx):
             except Exception as e:
                 logger.error(f"Fout in after_playing: {e}")
 
-
     ctx.voice_client.play(source, after=after_playing)
     message = await send_now_playing(ctx, song)
 
@@ -185,11 +178,27 @@ async def skip(ctx):
         await ctx.send("Nummer geskipt.")
 
 
+@bot.tree.command(name="skip", description="Sla het huidige nummer over")
+async def slash_skip(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await interaction.response.send_message("Nummer geskipt.")
+
+
 @bot.command()
 async def stop(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("Muziek gestopt en kanaal verlaten.")
+
+
+@bot.tree.command(name="stop", description="Stop de muziek en verlaat het kanaal")
+async def slash_stop(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await interaction.response.send_message("Muziek gestopt en kanaal verlaten.")
 
 
 @bot.command()
@@ -199,6 +208,15 @@ async def np(ctx):
         await send_now_playing(ctx, song)
     else:
         await ctx.send("Er wordt momenteel niets afgespeeld.")
+
+
+@bot.tree.command(name="np", description="Bekijk welk nummer nu wordt afgespeeld")
+async def slash_np(interaction: discord.Interaction):
+    song = peek_next_song(interaction.guild.id)
+    if song:
+        await send_now_playing(interaction, song)
+    else:
+        await interaction.response.send_message("Er wordt momenteel niets afgespeeld.")
 
 
 @bot.command()
@@ -227,16 +245,34 @@ async def queue(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.tree.command(name="queue", description="Bekijk de wachtrij")
+async def slash_queue(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await queue(ctx)
+
+
 @bot.command()
 async def clear(ctx):
     reset_queue(ctx.guild.id)
     await ctx.send("Wachtrij geleegd.")
 
 
+@bot.tree.command(name="clear", description="Leeg de wachtrij")
+async def slash_clear(interaction: discord.Interaction):
+    reset_queue(interaction.guild.id)
+    await interaction.response.send_message("Wachtrij geleegd.")
+
+
 @bot.command()
 async def loop(ctx):
     state = toggle_looping(ctx.guild.id)
     await ctx.send(f"Looping staat nu op: {state}")
+
+
+@bot.tree.command(name="loop", description="Toggle looping voor huidige wachtrij")
+async def slash_loop(interaction: discord.Interaction):
+    state = toggle_looping(interaction.guild.id)
+    await interaction.response.send_message(f"Looping staat nu op: {state}")
 
 
 @bot.event

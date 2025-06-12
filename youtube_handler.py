@@ -6,30 +6,17 @@ logger = logging.getLogger(__name__)
 
 COOKIES_PATH = "cookies.txt"
 
-# Shared yt-dlp options
-base_opts = {
-    'format': 'bestaudio/best',
-    'quiet': True,
-    'default_search': 'ytsearch',
-    'noplaylist': False,
-    'extract_flat': False,
-    'ignoreerrors': True,
-    'source_address': '0.0.0.0',
-    'cookiefile': COOKIES_PATH,
-    'cachedir': False, # voorkom caching issues bij updates van n-sig
-    'verbose': True
-}
-
 def get_audio_info(queries):
     ydl_opts = {
-        "format": "bestaudio/best",
-        "quiet": True,
-        "default_search": "ytsearch",
-        "noplaylist": True,
-        "socket_timeout": 10,
-        "retry_sleep_functions": {"http": lambda *_: 1},  # snel retry
-        "retries": 2,
-}
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'default_search': 'ytsearch',
+        'noplaylist': False,
+        'extract_flat': False,
+        'ignoreerrors': True,
+        'source_address': '0.0.0.0',
+        'cookiefile': COOKIES_PATH
+    }
 
     results = []
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -70,10 +57,6 @@ def fetch_stream_url(video_url):
         'noplaylist': True
     })
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(video_url, download=False)
-            return info.get('url')
-        except Exception as e:
-            logger.warning(f"[YT-DLP] Kan stream URL niet ophalen voor '{video_url}': {e}")
-            return None
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=False)
+        return info.get('url')

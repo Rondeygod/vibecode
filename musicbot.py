@@ -184,4 +184,7 @@ async def on_ready():
     except Exception as e:
         print(f"Slash commands sync fout: {e}")
 
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN ontbreekt in de omgeving.")
+
 bot.run(TOKEN)

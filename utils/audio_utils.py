@@ -1,4 +1,3 @@
-import discord
 from discord import FFmpegPCMAudio
 
 FFMPEG_BEFORE_OPTS = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'

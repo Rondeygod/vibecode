@@ -11,7 +11,10 @@ Een simpele Discord muziekbot met `#` als prefix. Je kunt `#play`, `#skip`, `#pa
    ```bash
    pip install -r requirements.txt
    ```
-3. Start de bot met:
+3. Zet de nodige omgevingsvariabelen voor Discord en Spotify:
+   - `DISCORD_TOKEN` voor je bot-token.
+   - `SPOTIFY_CLIENT_ID` en `SPOTIFY_CLIENT_SECRET` voor Spotify (optioneel).
+4. Start de bot met:
    ```bash
    python3 musicbot.py
    ```

@@ -11,10 +11,18 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 logger = logging.getLogger(__name__)
 
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET
-))
+if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    sp = spotipy.Spotify(
+        auth_manager=SpotifyClientCredentials(
+            client_id=SPOTIFY_CLIENT_ID,
+            client_secret=SPOTIFY_CLIENT_SECRET,
+        )
+    )
+else:
+    logger.warning(
+        "SPOTIFY_CLIENT_ID/SECRET niet ingesteld. Spotify functionaliteit is uitgeschakeld."
+    )
+    sp = None
 
 def is_spotify_url(url):
     """Controleert of de URL een Spotify-link is."""
@@ -33,6 +41,10 @@ def get_spotify_tracks(url):
     Wordt gebruikt voor YouTube-zoekopdrachten.
     """
     results = []
+
+    if sp is None:
+        logger.warning("Spotify client niet beschikbaar. Sla request over.")
+        return results
 
     try:
         if 'track' in url:

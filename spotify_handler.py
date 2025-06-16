@@ -1,7 +1,7 @@
 import os
 import logging
-from dotenv import load_dotenv
 import spotipy
+from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials
 
 load_dotenv()
@@ -20,14 +20,12 @@ def is_spotify_url(url):
     """Controleert of de URL een Spotify-link is."""
     return 'open.spotify.com' in url
 
-
 def extract_spotify_id(url, content_type):
     """Extraheert het ID uit een Spotify-URL voor een bepaald type (track/playlist/album)."""
     try:
         return url.split(f"{content_type}/")[-1].split("?")[0]
     except IndexError:
         return None
-
 
 def get_spotify_tracks(url):
     """

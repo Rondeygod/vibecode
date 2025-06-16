@@ -76,9 +76,7 @@ def queue_length(guild_id):
 
 def get_total_duration(guild_id):
     """
-    Berekent de resterende tijd (in seconden) van de wachtrij,
-    exclusief het nummer dat momenteel speelt.
+    Geeft de totale duur van de wachtrij in seconden terug.
     """
     q = get_queue(guild_id)
-    # Sla het eerste nummer over (momenteel afgespeeld)
-    return sum(song.get('duration', 0) for song in list(q)[1:])
+    return sum(song.get("duration", 0) for song in q)

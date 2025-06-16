@@ -6,288 +6,182 @@ import logging
 import os
 from dotenv import load_dotenv
 
-from spotify_handler import get_spotify_tracks, is_spotify_url
-from youtube_handler import get_audio_info
-from playlist_handler import flatten_playlist, filter_valid_tracks
-from utils.queue_manager import (
-    get_queue, reset_queue, add_to_queue, pop_next_song,
-    peek_next_song, is_looping, toggle_looping, has_next
-)
-from utils.embed_builder import send_now_playing, update_progress_bar
-from utils.audio_utils import format_duration, get_ffmpeg_audio_source
-
-import yt_dlp
+from spotify_handler import is_spotify_url, get_spotify_tracks
+from youtube_handler import get_audio_info, get_audio_info_fast
+from utils.queue_manager import add_to_queue, get_queue, reset_queue, pop_next_song
+from utils.audio_utils import get_ffmpeg_audio_source
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-COOKIES_PATH = "cookies.txt"
-
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
-logger = logging.getLogger(__name__)
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='#', intents=intents)
+bot = commands.Bot(command_prefix="#", intents=intents)
 
+logging.basicConfig(level=logging.INFO)
 
-class ControlButtons(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=None)
-        self.ctx = ctx
+# --- Playback logic ---
+async def ensure_voice(interaction):
+    """Ensure the bot is connected to the user's voice channel."""
+    if interaction.user.voice is None or interaction.user.voice.channel is None:
+        await interaction.followup.send("Je moet in een voice channel zitten!")
+        return None
+    voice_channel = interaction.user.voice.channel
+    if interaction.guild.voice_client is None:
+        await voice_channel.connect()
+    elif interaction.guild.voice_client.channel != voice_channel:
+        await interaction.guild.voice_client.move_to(voice_channel)
+    return interaction.guild.voice_client
 
-    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary)
-    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.ctx.voice_client and self.ctx.voice_client.is_playing():
-            self.ctx.voice_client.stop()
-            await interaction.response.send_message("Nummer geskipt.", ephemeral=True)
+async def play_next(interaction):
+    """Play the next song in the queue."""
+    queue = get_queue(interaction.guild.id)
+    if not queue or len(queue) == 0:
+        await interaction.followup.send("De wachtrij is leeg!")
+        return
 
-    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.ctx.voice_client:
-            await self.ctx.voice_client.disconnect()
-            await interaction.response.send_message("Muziek gestopt en kanaal verlaten.", ephemeral=True)
+    song = pop_next_song(interaction.guild.id)
+    if not song:
+        await interaction.followup.send("Geen nummers meer in de wachtrij.")
+        return
 
-    @discord.ui.button(label="📄 Queue", style=discord.ButtonStyle.secondary)
-    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        q = get_queue(interaction.guild.id)
-        if not q:
-            await interaction.response.send_message("De wachtrij is leeg.", ephemeral=True)
+    stream_url = song.get("url") or song.get("webpage_url")
+    if not stream_url:
+        await interaction.followup.send("Kan de stream-URL niet vinden voor dit nummer.")
+        return
+
+    voice_client = interaction.guild.voice_client
+    if not voice_client:
+        voice_client = await ensure_voice(interaction)
+        if not voice_client:
             return
 
-        embed = discord.Embed(title="Wachtrij", description="Aankomende nummers:")
-        total = 0
-        for i, song in enumerate(list(q)[:10], start=1):
-            title = song['title']
-            url = song['webpage_url']
-            duration = format_duration(song.get('duration', 0))
-            requester = song.get('requester', "Onbekend")
-            total += song.get('duration', 0)
-
-            embed.add_field(
-                name=f"{i}. {title}",
-                value=f"[Link]({url}) | Duur: {duration} | Door: {requester}",
-                inline=False
-            )
-
-        embed.set_footer(text=f"Totale wachttijd: {format_duration(total)}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.event
-async def on_ready():
-    logger.info(f"Bot actief als {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f"Slash commands gesynchroniseerd: {len(synced)}")
-    except Exception as e:
-        logger.error(f"Fout bij slash command sync: {e}")
-
-
-@bot.tree.command(name="controls", description="Laat bedieningsknoppen zien voor de muziek")
-async def slash_controls(interaction: discord.Interaction):
-    view = ControlButtons(interaction)
-    await interaction.response.send_message("🎵 Muziekbediening:", view=view, ephemeral=True)
-
-
-@bot.command(name="play")
-async def play_command(ctx, *, query):
-    await play(ctx, query=query)
-
-
-@bot.tree.command(name="play", description="Speel een nummer af vanaf YouTube of Spotify")
-@app_commands.describe(query="YouTube link, titel of Spotify-link")
-async def slash_play(interaction: discord.Interaction, query: str):
-    ctx = await commands.Context.from_interaction(interaction)
-    ctx.author = interaction.user
-
-    await interaction.response.defer(thinking=True)
-    ctx.send = lambda content=None, *, embed=None: interaction.followup.send(content=content, embed=embed)
-
-    await play(ctx, query=query)
-
-
-async def play(ctx, query):
-    if not ctx.author.voice:
-        await ctx.send("Je moet eerst in een voicekanaal zitten.")
-        return
-
-    voice_channel = ctx.author.voice.channel
-    if ctx.voice_client is None or not ctx.voice_client.is_connected():
-        await voice_channel.connect()
-
-    guild_id = ctx.guild.id
-    get_queue(guild_id)
-
-    queries = get_spotify_tracks(query) if is_spotify_url(query) else [query]
-    songs = []
-    for q in queries:
-        tracks = await get_audio_info([q])
-        flat_tracks = flatten_playlist(tracks)
-        valid_tracks = filter_valid_tracks(flat_tracks)
-        songs.extend(valid_tracks)
-
-    if not songs:
-        await ctx.send("Geen nummers gevonden.")
-        return
-
-    for song in songs:
-        song['requester'] = str(ctx.author)
-
-    add_to_queue(guild_id, songs)
-
-    first_song = songs[0]
-    embed = discord.Embed(title="🎶 Toegevoegd aan de wachtrij",
-                          description=f"[{first_song['title']}]({first_song['webpage_url']})",
-                          color=discord.Color.blue())
-    embed.add_field(name="Duur", value=format_duration(first_song.get("duration", 0)), inline=True)
-    embed.add_field(name="Aangevraagd door", value=str(ctx.author), inline=True)
-    if first_song.get("thumbnail"):
-        embed.set_thumbnail(url=first_song["thumbnail"])
-
-    await ctx.send(embed=embed)
-
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx)
-
-
-async def play_next(ctx):
-    guild_id = ctx.guild.id
-    if not has_next(guild_id):
-        await ctx.voice_client.disconnect()
-        logger.info("Queue leeg, bot leavt voice.")
-        return
-
-    song = peek_next_song(guild_id)
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'noplaylist': True,
-        'extract_flat': False,
-        'cookiefile': COOKIES_PATH
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(song['webpage_url'], download=False)
-            stream_url = info.get('url')
-            if not stream_url:
-                raise Exception("Geen stream-URL gevonden")
-    except Exception as e:
-        logger.error(f"Kon stream URL niet ophalen: {e}")
-        pop_next_song(guild_id)
-        await play_next(ctx)
-        return
-
-    logger.info(f"Speelt af: {song['title']} - {stream_url}")
     source = get_ffmpeg_audio_source(stream_url)
-
     def after_playing(error):
         if error:
-            logger.error(f"Fout tijdens afspelen: {error}")
-        elif not ctx.voice_client or not ctx.voice_client.is_connected():
-            logger.warning("Niet verbonden met voice bij einde nummer.")
+            logging.error(f"Fout bij afspelen: {error}")
+        fut = asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            logging.error(f"Fout bij play_next: {e}")
+
+    voice_client.play(source, after=after_playing)
+    asyncio.create_task(interaction.followup.send(f"Speelt af: {song['title']} - {song.get('webpage_url', '')}"))
+
+# --- Slash command: PLAY ---
+@bot.tree.command(name="play", description="Speel een nummer, YouTube/Spotify-link of playlist af.")
+@app_commands.describe(query="YouTube/Spotify-link, playlist of zoekopdracht")
+async def slash_play(interaction: discord.Interaction, query: str):
+    await interaction.response.defer(thinking=True)
+    requester = interaction.user.display_name
+
+    # YouTube playlist-link?
+    if ("youtube.com/playlist" in query) or ("list=" in query and "youtube.com" in query):
+        first_tracks, rest_tracks = await get_audio_info_fast(query)
+        # Bouw nieuwe lijst met correcte dicts
+        new_first_tracks = []
+        for t in first_tracks:
+            if isinstance(t, dict):
+                t['requester'] = requester
+                new_first_tracks.append(t)
+            else:
+                new_first_tracks.append({'title': str(t), 'url': str(t), 'webpage_url': str(t), 'duration': 0, 'thumbnail': None, 'requester': requester})
+        first_tracks = new_first_tracks
+
+        if first_tracks:
+            add_to_queue(interaction.guild.id, first_tracks)
+            await interaction.followup.send(f"Toegevoegd: {first_tracks[0]['title']}")
+            voice_client = interaction.guild.voice_client
+            if not voice_client or not voice_client.is_playing():
+                await ensure_voice(interaction)
+                await play_next(interaction)
         else:
-            fut = asyncio.run_coroutine_threadsafe(handle_song_end(ctx), bot.loop)
-            try:
-                fut.result()
-            except Exception as e:
-                logger.error(f"Fout in after_playing: {e}")
+            await interaction.followup.send("Geen nummers gevonden in deze YouTube-playlist.")
 
-    ctx.voice_client.play(source, after=after_playing)
-    message = await send_now_playing(ctx, song)
-
-    async def update_progress():
-        elapsed = 0
-        duration = song.get('duration') or 1
-        while elapsed < duration and ctx.voice_client and ctx.voice_client.is_playing():
-            await asyncio.sleep(5)
-            elapsed += 5
-            await update_progress_bar(message, song, elapsed)
-
-    asyncio.create_task(update_progress())
-
-
-async def handle_song_end(ctx):
-    guild_id = ctx.guild.id
-    if is_looping(guild_id):
-        q = get_queue(guild_id)
-        q.append(q.popleft())
-    else:
-        pop_next_song(guild_id)
-
-    if has_next(guild_id):
-        await play_next(ctx)
-    else:
-        await ctx.voice_client.disconnect()
-
-
-@bot.command()
-async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("Nummer geskipt.")
-
-
-@bot.command()
-async def stop(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("Muziek gestopt en kanaal verlaten.")
-
-
-@bot.command()
-async def np(ctx):
-    song = peek_next_song(ctx.guild.id)
-    if song:
-        await send_now_playing(ctx, song)
-    else:
-        await ctx.send("Er wordt momenteel niets afgespeeld.")
-
-
-@bot.command()
-async def queue(ctx):
-    q = get_queue(ctx.guild.id)
-    if not q:
-        await ctx.send("De wachtrij is leeg.")
+        # Voeg de rest toe in de achtergrond
+        async def add_rest():
+            new_rest_tracks = []
+            for t in rest_tracks:
+                if isinstance(t, dict):
+                    t['requester'] = requester
+                    new_rest_tracks.append(t)
+                else:
+                    new_rest_tracks.append({'title': str(t), 'url': str(t), 'webpage_url': str(t), 'duration': 0, 'thumbnail': None, 'requester': requester})
+            if new_rest_tracks:
+                add_to_queue(interaction.guild.id, new_rest_tracks)
+        asyncio.create_task(add_rest())
         return
 
-    embed = discord.Embed(title="Wachtrij", description="Aankomende nummers:")
-    total = 0
-    for i, song in enumerate(list(q)[:10], start=1):
-        title = song['title']
-        url = song['webpage_url']
-        duration = format_duration(song.get('duration', 0))
-        requester = song.get('requester', "Onbekend")
-        total += song.get('duration', 0)
+    # Spotify-link?
+    if is_spotify_url(query):
+        queries = get_spotify_tracks(query)
+        if not queries:
+            await interaction.followup.send("Kon geen nummers vinden in deze Spotify-link.")
+            return
+        # Snel eerste nummer zoeken en afspelen
+        yt_tracks = await get_audio_info([queries[0]])
+        for t in yt_tracks:
+            t['requester'] = requester
+        if yt_tracks:
+            add_to_queue(interaction.guild.id, yt_tracks)
+            await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}")
+            voice_client = interaction.guild.voice_client
+            if not voice_client or not voice_client.is_playing():
+                await ensure_voice(interaction)
+                await play_next(interaction)
+        else:
+            await interaction.followup.send("Geen nummers gevonden op YouTube voor deze Spotify-track.")
 
-        embed.add_field(
-            name=f"{i}. {title}",
-            value=f"[Link]({url}) | Duur: {duration} | Door: {requester}",
-            inline=False
-        )
+        # Rest van de playlist in de achtergrond
+        async def add_rest_spotify():
+            rest_queries = queries[1:]
+            if rest_queries:
+                rest_tracks = await get_audio_info(rest_queries)
+                for t in rest_tracks:
+                    t['requester'] = requester
+                if rest_tracks:
+                    add_to_queue(interaction.guild.id, rest_tracks)
+        asyncio.create_task(add_rest_spotify())
+        return
 
-    embed.set_footer(text=f"Totale wachttijd: {format_duration(total)}")
-    await ctx.send(embed=embed)
+    # Gewone YouTube-link of zoekopdracht
+    yt_tracks = await get_audio_info([query])
+    for t in yt_tracks:
+        t['requester'] = requester
+    if yt_tracks:
+        add_to_queue(interaction.guild.id, yt_tracks)
+        await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}")
+        voice_client = interaction.guild.voice_client
+        if not voice_client or not voice_client.is_playing():
+            await ensure_voice(interaction)
+            await play_next(interaction)
+    else:
+        await interaction.followup.send("Geen nummers gevonden.")
 
+# --- Slash command: SKIP ---
+@bot.tree.command(name="skip", description="Sla het huidige nummer over.")
+async def slash_skip(interaction: discord.Interaction):
+    voice_client = interaction.guild.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()
+        await interaction.response.send_message("Nummer overgeslagen!")
+    else:
+        await interaction.response.send_message("Er wordt momenteel niets afgespeeld.", ephemeral=True)
 
-@bot.command()
-async def clear(ctx):
-    reset_queue(ctx.guild.id)
-    await ctx.send("Wachtrij geleegd.")
+# --- Slash command: CLEAR ---
+@bot.tree.command(name="clear", description="Leeg de wachtrij.")
+async def slash_clear(interaction: discord.Interaction):
+    reset_queue(interaction.guild.id)
+    await interaction.response.send_message("De wachtrij is geleegd.")
 
-
-@bot.command()
-async def loop(ctx):
-    state = toggle_looping(ctx.guild.id)
-    await ctx.send(f"Looping staat nu op: {state}")
-
-
+# --- Bot events ---
 @bot.event
-async def on_voice_state_update(member, before, after):
-    voice_client = discord.utils.get(bot.voice_clients, guild=member.guild)
-    if voice_client and voice_client.is_connected():
-        if len(voice_client.channel.members) == 1:
-            await voice_client.disconnect()
-            logger.info(f"Voicekanaal verlaten in guild {member.guild.name} omdat het leeg was.")
-
+async def on_ready():
+    print(f"Bot is online als {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Slash commands gesynchroniseerd: {len(synced)}")
+    except Exception as e:
+        print(f"Slash commands sync fout: {e}")
 
 bot.run(TOKEN)

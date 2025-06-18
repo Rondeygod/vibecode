@@ -119,6 +119,9 @@ async def slash_play(interaction: discord.Interaction, query: str):
     try:
         if "playlist" in query or ("list=" in query and "youtube.com" in query):
             first_tracks, rest_tracks = await get_audio_info_fast(query)
+            if not first_tracks:
+                await interaction.followup.send("Er zijn geen afspeelbare nummers gevonden in deze playlist.")
+                return
             for t in first_tracks:
                 t['requester'] = requester
             add_to_queue(interaction.guild.id, first_tracks)

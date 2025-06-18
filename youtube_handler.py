@@ -37,7 +37,7 @@ async def get_audio_info(queries):
                             continue
                         results.append({
                             'title': entry.get('title', 'Onbekend'),
-                            'url': entry.get('url') if entry.get('url') else entry.get('webpage_url'),
+                            'url': entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}",
                             'webpage_url': entry.get('webpage_url'),
                             'duration': entry.get('duration', 0),
                             'thumbnail': entry.get('thumbnail'),
@@ -45,7 +45,7 @@ async def get_audio_info(queries):
                 else:
                     results.append({
                         'title': info.get('title', 'Onbekend'),
-                        'url': info.get('url') if info.get('url') else info.get('webpage_url'),
+                        'url': info.get('url') or info.get('webpage_url'),
                         'webpage_url': info.get('webpage_url'),
                         'duration': info.get('duration', 0),
                         'thumbnail': info.get('thumbnail'),
@@ -58,41 +58,64 @@ async def get_audio_info(queries):
 
 async def get_audio_info_fast(playlist_url):
     loop = asyncio.get_event_loop()
-    ydl_opts_flat = {
-        'extract_flat': True,
+    flat_opts = {
         'quiet': True,
+        'extract_flat': True,
+        'force_generic_extractor': True,
         'noplaylist': False,
-        'ignoreerrors': True,
+        'cookiefile': COOKIES_PATH,
+        'ignoreerrors': True
     }
-    with yt_dlp.YoutubeDL(ydl_opts_flat) as ydl:
-        info = await loop.run_in_executor(None, lambda: ydl.extract_info(playlist_url, download=False))
-        entries = info.get('entries', [])
-        if not isinstance(entries, list) or not entries:
-            logger.warning(f"[YT-DLP] Ongeldige playliststructuur voor URL: {playlist_url}")
-            return [], []
 
-        first_id = entries[0]['id']
-        ydl_opts_full = {'quiet': True, 'cookiefile': COOKIES_PATH}
-        with yt_dlp.YoutubeDL(ydl_opts_full) as ydl_full:
-            first_info = await loop.run_in_executor(None, lambda: ydl_full.extract_info(first_id, download=False))
+    try:
+        with yt_dlp.YoutubeDL(flat_opts) as ydl:
+            info = await loop.run_in_executor(None, lambda: ydl.extract_info(playlist_url, download=False))
+            entries = info.get("entries", []) if info else []
+            if not entries or not isinstance(entries, list):
+                logger.warning(f"[YT-DLP] Ongeldige playliststructuur voor URL: {playlist_url}")
+                return [], []
 
-        first_track = {
-            'title': first_info.get('title', 'Onbekend'),
-            'url': first_info.get('url') if first_info.get('url') else first_info.get('webpage_url'),
-            'webpage_url': first_info.get('webpage_url'),
-            'duration': first_info.get('duration', 0),
-            'thumbnail': first_info.get('thumbnail'),
+        # Detail ophalen van de eerste 3 entries
+        detail_count = min(3, len(entries))
+        first_tracks = []
+        full_opts = {
+            'quiet': True,
+            'cookiefile': COOKIES_PATH,
+            'ignoreerrors': True
         }
+        with yt_dlp.YoutubeDL(full_opts) as ydl_full:
+            for entry in entries[:detail_count]:
+                try:
+                    vid_id = entry.get("id")
+                    if not vid_id:
+                        continue
+                    full = await loop.run_in_executor(None, lambda: ydl_full.extract_info(vid_id, download=False))
+                    first_tracks.append({
+                        'title': full.get('title', 'Onbekend'),
+                        'url': full.get('url') or full.get('webpage_url'),
+                        'webpage_url': full.get('webpage_url'),
+                        'duration': full.get('duration', 0),
+                        'thumbnail': full.get('thumbnail'),
+                    })
+                except Exception as e:
+                    logger.warning(f"[YT-DLP] Fout bij ophalen detail track: {e}")
 
+        # Rest als placeholders
         rest_tracks = []
-        for entry in entries[1:]:
-            if entry and entry.get("id"):
-                rest_tracks.append({
-                    'title': entry.get('title', 'Onbekend'),
-                    'url': f"https://www.youtube.com/watch?v={entry['id']}",
-                    'webpage_url': f"https://www.youtube.com/watch?v={entry['id']}",
-                    'duration': 0,
-                    'thumbnail': None,
-                })
+        for entry in entries[detail_count:]:
+            vid = entry.get("id")
+            if not vid:
+                continue
+            rest_tracks.append({
+                'title': entry.get('title', 'Onbekend'),
+                'url': f"https://www.youtube.com/watch?v={vid}",
+                'webpage_url': f"https://www.youtube.com/watch?v={vid}",
+                'duration': 0,
+                'thumbnail': None,
+            })
 
-        return [first_track], rest_tracks
+        return first_tracks, rest_tracks
+
+    except Exception as e:
+        logger.warning(f"[YT-DLP] Playlist extractie mislukt: {e.__class__.__name__} - {e}")
+        return [], []

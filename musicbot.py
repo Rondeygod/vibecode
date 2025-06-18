@@ -18,6 +18,45 @@ bot = commands.Bot(command_prefix="#", intents=intents)
 
 logging.basicConfig(level=logging.INFO)
 
+class PlayerControls(discord.ui.View):
+    def __init__(self, interaction):
+        super().__init__(timeout=None)
+        self.interaction = interaction
+
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+            await interaction.response.send_message("Nummer overgeslagen!", ephemeral=True)
+        else:
+            await interaction.response.send_message("Er wordt niets afgespeeld.", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc:
+            vc.stop()
+            await vc.disconnect()
+            reset_queue(interaction.guild.id)
+            await interaction.response.send_message("Bot gestopt en gedisconnect.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Bot is niet verbonden.", ephemeral=True)
+
+    @discord.ui.button(label="📜 Queue", style=discord.ButtonStyle.secondary)
+    async def queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        queue = get_queue(interaction.guild.id)
+        if not queue:
+            await interaction.response.send_message("De wachtrij is leeg.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🎶 Wachtrij", color=discord.Color.blue())
+        for i, song in enumerate(queue[:20], 1):
+            embed.add_field(name=f"{i}. {song.get('title', 'Onbekend')}", value=f"Gevraagd door: {song.get('requester', 'Onbekend')}", inline=False)
+        if len(queue) > 20:
+            embed.set_footer(text=f"...en {len(queue) - 20} meer nummers in de wachtrij.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def ensure_voice(interaction):
     if interaction.user.voice is None or interaction.user.voice.channel is None:
         await interaction.followup.send("Je moet in een voice channel zitten!")
@@ -29,10 +68,11 @@ async def ensure_voice(interaction):
         await interaction.guild.voice_client.move_to(voice_channel)
     return interaction.guild.voice_client
 
+
 async def play_next(interaction):
     queue = get_queue(interaction.guild.id)
-    if not queue or len(queue) == 0:
-        return  # Don't send a message here
+    if not queue:
+        return
 
     song = pop_next_song(interaction.guild.id)
     if not song:
@@ -70,116 +110,47 @@ async def play_next(interaction):
         logging.error(f"Fout bij voice_client.play: {e}")
         await play_next(interaction)
 
+
 @bot.tree.command(name="play", description="Speel een nummer, YouTube-link, playlist of zoekopdracht af.")
 @app_commands.describe(query="YouTube-link, playlist of zoekopdracht")
 async def slash_play(interaction: discord.Interaction, query: str):
     await interaction.response.defer(thinking=True)
     requester = interaction.user.display_name
-
-    # YouTube playlist-link?
-    if ("youtube.com/playlist" in query) or ("list=" in query and "youtube.com" in query):
-        first_tracks, rest_tracks = await get_audio_info_fast(query)
-        new_first_tracks = []
-        for t in first_tracks:
-            if isinstance(t, dict):
+    try:
+        if "playlist" in query or ("list=" in query and "youtube.com" in query):
+            first_tracks, rest_tracks = await get_audio_info_fast(query)
+            for t in first_tracks:
                 t['requester'] = requester
-                new_first_tracks.append(t)
-            else:
-                new_first_tracks.append({'title': str(t), 'url': str(t), 'webpage_url': str(t), 'duration': 0, 'thumbnail': None, 'requester': requester})
-        first_tracks = new_first_tracks
-
-        if first_tracks:
             add_to_queue(interaction.guild.id, first_tracks)
-            await interaction.followup.send(f"Toegevoegd: {first_tracks[0]['title']}")
+            await interaction.followup.send(f"Toegevoegd: {first_tracks[0]['title']}", view=PlayerControls(interaction))
             voice_client = interaction.guild.voice_client
             if not voice_client or not voice_client.is_playing():
                 await ensure_voice(interaction)
                 await play_next(interaction)
-        else:
-            await interaction.followup.send("Geen nummers gevonden in deze YouTube-playlist.")
 
-        # Voeg de rest toe in de achtergrond
-        async def add_rest():
-            new_rest_tracks = []
-            for t in rest_tracks:
-                if isinstance(t, dict):
+            async def add_rest():
+                for t in rest_tracks:
                     t['requester'] = requester
-                    new_rest_tracks.append(t)
-                else:
-                    new_rest_tracks.append({'title': str(t), 'url': str(t), 'webpage_url': str(t), 'duration': 0, 'thumbnail': None, 'requester': requester})
-            if new_rest_tracks:
-                add_to_queue(interaction.guild.id, new_rest_tracks)
-        asyncio.create_task(add_rest())
-        return
+                add_to_queue(interaction.guild.id, rest_tracks)
+            asyncio.create_task(add_rest())
+            return
 
-    # YouTube-link (geen playlist)
-    if "youtube.com" in query or "youtu.be" in query:
         yt_tracks = await get_audio_info([query])
         for t in yt_tracks:
             t['requester'] = requester
         if yt_tracks:
             add_to_queue(interaction.guild.id, yt_tracks)
-            await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}")
+            await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}", view=PlayerControls(interaction))
             voice_client = interaction.guild.voice_client
             if not voice_client or not voice_client.is_playing():
                 await ensure_voice(interaction)
                 await play_next(interaction)
         else:
             await interaction.followup.send("Geen nummers gevonden.")
-        return
+    except Exception as e:
+        logging.error(f"Fout bij get_audio_info: {e}")
+        await interaction.followup.send("Er is een fout opgetreden bij het ophalen van audio-informatie.")
 
-    # Zoekopdracht (YouTube search)
-    yt_tracks = await get_audio_info([query])
-    for t in yt_tracks:
-        t['requester'] = requester
-    if yt_tracks:
-        add_to_queue(interaction.guild.id, yt_tracks)
-        await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}")
-        voice_client = interaction.guild.voice_client
-        if not voice_client or not voice_client.is_playing():
-            await ensure_voice(interaction)
-            await play_next(interaction)
-    else:
-        await interaction.followup.send("Geen nummers gevonden.")
-
-@bot.tree.command(name="skip", description="Sla het huidige nummer over.")
-async def slash_skip(interaction: discord.Interaction):
-    voice_client = interaction.guild.voice_client
-    if voice_client and voice_client.is_playing():
-        voice_client.stop()
-        await interaction.response.send_message("Nummer overgeslagen!")
-    else:
-        await interaction.response.send_message("Er wordt momenteel niets afgespeeld.", ephemeral=True)
-
-@bot.tree.command(name="clear", description="Leeg de wachtrij.")
-async def slash_clear(interaction: discord.Interaction):
-    reset_queue(interaction.guild.id)
-    await interaction.response.send_message("De wachtrij is geleegd.")
-
-@bot.tree.command(name="stop", description="Stop de muziek en disconnect.")
-async def slash_stop(interaction: discord.Interaction):
-    voice_client = interaction.guild.voice_client
-    if voice_client:
-        voice_client.stop()
-        await voice_client.disconnect()
-        reset_queue(interaction.guild.id)
-        await interaction.response.send_message("Bot gestopt en gedisconnect.")
-    else:
-        await interaction.response.send_message("Bot is niet verbonden met een voice channel.", ephemeral=True)
-
-@bot.tree.command(name="queue", description="Toon de wachtrij.")
-async def slash_queue(interaction: discord.Interaction):
-    queue = get_queue(interaction.guild.id)
-    if not queue or len(queue) == 0:
-        await interaction.response.send_message("De wachtrij is leeg.")
-        return
-    max_songs = 20
-    msg = "**Wachtrij:**\n"
-    for i, song in enumerate(queue[:max_songs], 1):
-        msg += f"{i}. {song.get('title', 'Onbekend')} ({song.get('requester', 'Onbekend')})\n"
-    if len(queue) > max_songs:
-        msg += f"...en {len(queue) - max_songs} meer nummers in de wachtrij."
-    await interaction.response.send_message(msg)
 
 @bot.event
 async def on_ready():

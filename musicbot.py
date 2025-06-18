@@ -14,7 +14,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.all()
-bot = commands.Bot(intents=intents)
+bot = commands.Bot(command_prefix="#", intents=intents)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,26 +32,29 @@ async def ensure_voice(interaction):
 async def play_next(interaction):
     queue = get_queue(interaction.guild.id)
     if not queue or len(queue) == 0:
-        await interaction.followup.send("De wachtrij is leeg!")
-        return
+        return  # Don't send a message here
 
     song = pop_next_song(interaction.guild.id)
     if not song:
-        await interaction.followup.send("Geen nummers meer in de wachtrij.")
         return
 
     stream_url = song.get("url") or song.get("webpage_url")
     if not stream_url:
-        await interaction.followup.send("Kan de stream-URL niet vinden voor dit nummer.")
         return
 
     voice_client = interaction.guild.voice_client
-    if not voice_client:
+    if not voice_client or not voice_client.is_connected():
         voice_client = await ensure_voice(interaction)
-        if not voice_client:
+        if not voice_client or not voice_client.is_connected():
             return
 
-    source = get_ffmpeg_audio_source(stream_url)
+    try:
+        source = get_ffmpeg_audio_source(stream_url)
+    except Exception as e:
+        logging.error(f"Fout bij het maken van audio bron: {e}")
+        await play_next(interaction)
+        return
+
     def after_playing(error):
         if error:
             logging.error(f"Fout bij afspelen: {error}")
@@ -61,8 +64,11 @@ async def play_next(interaction):
         except Exception as e:
             logging.error(f"Fout bij play_next: {e}")
 
-    voice_client.play(source, after=after_playing)
-    asyncio.create_task(interaction.followup.send(f"Speelt af: {song['title']} - {song.get('webpage_url', '')}"))
+    try:
+        voice_client.play(source, after=after_playing)
+    except Exception as e:
+        logging.error(f"Fout bij voice_client.play: {e}")
+        await play_next(interaction)
 
 @bot.tree.command(name="play", description="Speel een nummer, YouTube-link, playlist of zoekopdracht af.")
 @app_commands.describe(query="YouTube-link, playlist of zoekopdracht")
@@ -167,9 +173,12 @@ async def slash_queue(interaction: discord.Interaction):
     if not queue or len(queue) == 0:
         await interaction.response.send_message("De wachtrij is leeg.")
         return
+    max_songs = 20
     msg = "**Wachtrij:**\n"
-    for i, song in enumerate(queue, 1):
+    for i, song in enumerate(queue[:max_songs], 1):
         msg += f"{i}. {song.get('title', 'Onbekend')} ({song.get('requester', 'Onbekend')})\n"
+    if len(queue) > max_songs:
+        msg += f"...en {len(queue) - max_songs} meer nummers in de wachtrij."
     await interaction.response.send_message(msg)
 
 @bot.event

@@ -122,7 +122,20 @@ async def slash_play(interaction: discord.Interaction, query: str):
             for t in first_tracks:
                 t['requester'] = requester
             add_to_queue(interaction.guild.id, first_tracks)
-            await interaction.followup.send(f"Toegevoegd: {first_tracks[0]['title']}", view=PlayerControls(interaction))
+
+            queue = get_queue(interaction.guild.id)
+            total_duration = sum(s.get('duration', 0) for s in queue)
+
+            embed = discord.Embed(title="🎶 Nummer toegevoegd", color=discord.Color.blurple())
+            embed.add_field(name="Song", value=first_tracks[0]['title'], inline=False)
+            embed.add_field(name="Requester", value=requester, inline=True)
+            embed.add_field(name="Tijd", value=f"{first_tracks[0]['duration'] // 60}:{first_tracks[0]['duration'] % 60:02} min", inline=True)
+            embed.add_field(name="Totale wachtrij nummers", value=str(len(queue)), inline=True)
+            embed.add_field(name="Totale wachtrij tijd", value=f"{total_duration // 60}:{total_duration % 60:02} min", inline=True)
+            if first_tracks[0].get("thumbnail"):
+                embed.set_thumbnail(url=first_tracks[0]['thumbnail'])
+            await interaction.followup.send(embed=embed, view=PlayerControls(interaction))
+
             voice_client = interaction.guild.voice_client
             if not voice_client or not voice_client.is_playing():
                 await ensure_voice(interaction)
@@ -140,7 +153,18 @@ async def slash_play(interaction: discord.Interaction, query: str):
             t['requester'] = requester
         if yt_tracks:
             add_to_queue(interaction.guild.id, yt_tracks)
-            await interaction.followup.send(f"Toegevoegd: {yt_tracks[0]['title']}", view=PlayerControls(interaction))
+            queue = get_queue(interaction.guild.id)
+            total_duration = sum(s.get('duration', 0) for s in queue)
+
+            embed = discord.Embed(title="🎶 Nummer toegevoegd", color=discord.Color.blurple())
+            embed.add_field(name="Song", value=yt_tracks[0]['title'], inline=False)
+            embed.add_field(name="Requester", value=requester, inline=True)
+            embed.add_field(name="Tijd", value=f"{yt_tracks[0]['duration'] // 60}:{yt_tracks[0]['duration'] % 60:02} min", inline=True)
+            embed.add_field(name="Totale wachtrij nummers", value=str(len(queue)), inline=True)
+            embed.add_field(name="Totale wachtrij tijd", value=f"{total_duration // 60}:{total_duration % 60:02} min", inline=True)
+            if yt_tracks[0].get("thumbnail"):
+                embed.set_thumbnail(url=yt_tracks[0]['thumbnail'])
+            await interaction.followup.send(embed=embed, view=PlayerControls(interaction))
             voice_client = interaction.guild.voice_client
             if not voice_client or not voice_client.is_playing():
                 await ensure_voice(interaction)

@@ -16,6 +16,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="#", intents=intents)
 
+logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.INFO)
 
 class PlayerControls(discord.ui.View):
@@ -50,7 +51,7 @@ class PlayerControls(discord.ui.View):
             await interaction.response.send_message("De wachtrij is leeg.", ephemeral=True)
             return
         embed = discord.Embed(title="🎶 Wachtrij", color=discord.Color.blue())
-        for i, song in enumerate(queue[:20], 1):
+        for i, song in enumerate(list(queue)[:20], 1):
             embed.add_field(name=f"{i}. {song.get('title', 'Onbekend')}", value=f"Gevraagd door: {song.get('requester', 'Onbekend')}", inline=False)
         if len(queue) > 20:
             embed.set_footer(text=f"...en {len(queue) - 20} meer nummers in de wachtrij.")
@@ -211,7 +212,7 @@ async def slash_queue(interaction: discord.Interaction):
         await interaction.response.send_message("De wachtrij is leeg.")
         return
     embed = discord.Embed(title="🎶 Wachtrij", color=discord.Color.blue())
-    for i, song in enumerate(queue[:20], 1):
+    for i, song in enumerate(list(queue)[:20], 1):
         embed.add_field(name=f"{i}. {song.get('title', 'Onbekend')}", value=f"Gevraagd door: {song.get('requester', 'Onbekend')}", inline=False)
     if len(queue) > 20:
         embed.set_footer(text=f"...en {len(queue) - 20} meer nummers in de wachtrij.")

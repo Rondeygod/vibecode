@@ -1,4 +1,5 @@
 discord.py
 yt-dlp
 python-dotenv
-spotipy
+PyNaCl
+

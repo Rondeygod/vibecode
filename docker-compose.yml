@@ -1,0 +1,14 @@
+services:
+  musicbot:
+    build: .
+    container_name: discord-music-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - MUSICBOT_STATE_DB=/data/musicbot_state.db
+    volumes:
+      - musicbot_data:/data
+
+volumes:
+  musicbot_data:

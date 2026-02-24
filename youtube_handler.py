@@ -1,151 +1,148 @@
-import logging
 import asyncio
+import shutil
+from pathlib import Path
+
 import yt_dlp
-import aiohttp
-import os
-from playlist_handler import flatten_playlist
-from urllib.parse import parse_qs, urlparse
-import re
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
-COOKIES_PATH = "cookies.txt"
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-YOUTUBE_PLAYLIST_API_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+def _resolve_node_executable() -> str | None:
+    """Find a usable Node.js binary for yt-dlp JS runtime support."""
+    in_path = shutil.which("node")
+    if in_path:
+        return in_path
 
-print("API KEY GEVONDEN:", YOUTUBE_API_KEY)
+    candidates = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return None
 
-async def get_audio_info(queries):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'noplaylist': False,
-        'extract_flat': False,
-        'ignoreerrors': True,
-        'source_address': '0.0.0.0',
-        'cookiefile': COOKIES_PATH
+
+NODE_PATH = _resolve_node_executable()
+JS_RUNTIMES = {"node": {"path": NODE_PATH}} if NODE_PATH else {"deno": {}}
+
+YDL_BASE_OPTS = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "noplaylist": True,
+    "extract_flat": False,
+    "skip_download": True,
+    "source_address": "0.0.0.0",
+    "js_runtimes": JS_RUNTIMES,
+    "remote_components": ["ejs:github"],
+}
+
+YDL_PLAYLIST_FLAT_OPTS = {
+    "quiet": True,
+    "ignoreerrors": True,
+    "extract_flat": "in_playlist",
+    "skip_download": True,
+    "noplaylist": False,
+    "source_address": "0.0.0.0",
+    "js_runtimes": JS_RUNTIMES,
+    "remote_components": ["ejs:github"],
+}
+
+
+def _flatten(entries):
+    """Flatten nested playlist entries into a single list."""
+    out = []
+    for item in entries or []:
+        if not item:
+            continue
+        if isinstance(item, dict) and item.get("_type") == "playlist" and item.get("entries"):
+            out.extend(_flatten(item["entries"]))
+        else:
+            out.append(item)
+    return out
+
+
+def _is_playlist(url: str) -> bool:
+    return ("list=" in url) and ("youtube.com" in url or "youtu.be" in url)
+
+
+async def _extract_info(query: str, opts: dict):
+    """Run blocking yt-dlp extraction in a thread executor."""
+    loop = asyncio.get_running_loop()
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return await loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
+
+
+def _normalize_track(info: dict, fallback_url: str) -> dict:
+    """Map yt-dlp info to the bot's normalized track schema."""
+    return {
+        "title": info.get("title") or "Unknown",
+        "url": info.get("url") or info.get("webpage_url") or fallback_url,
+        "webpage_url": info.get("webpage_url") or fallback_url,
+        "duration": int(info.get("duration") or 0),
+        "thumbnail": info.get("thumbnail"),
     }
 
-    results = []
-    loop = asyncio.get_event_loop()
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        for q in queries:
-            try:
-                info = await loop.run_in_executor(None, lambda: ydl.extract_info(q, download=False))
-                if info is None:
-                    logger.warning(f"[YT-DLP] Geen info gevonden voor: {q}")
-                    continue
+async def get_audio_info(queries: list[str]) -> list[dict]:
+    """
+    Resolve a list of URLs/search terms into normalized track dictionaries.
+    """
+    results: list[dict] = []
 
-                entries = []
-                if 'entries' in info and isinstance(info['entries'], list):
-                    entries = flatten_playlist(info['entries'])
-                else:
-                    entries = [info]
+    for query in queries:
+        opts = dict(YDL_BASE_OPTS)
+        if not (query.startswith("http://") or query.startswith("https://")):
+            opts["default_search"] = "ytsearch1"
 
-                for entry in entries:
-                    if not entry or not entry.get("url"):
-                        continue
-                    results.append({
-                        'title': entry.get('title', 'Onbekend'),
-                        'url': entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}",
-                        'webpage_url': entry.get('webpage_url'),
-                        'duration': entry.get('duration', 0),
-                        'thumbnail': entry.get('thumbnail'),
-                    })
+        try:
+            info = await _extract_info(query, opts)
+        except yt_dlp.utils.DownloadError:
+            continue
 
-            except Exception as e:
-                logger.warning(f"[YT-DLP] Fout bij verwerken van query '{q}': {e.__class__.__name__} - {e}")
+        if not info:
+            continue
+
+        if "entries" in info and info["entries"]:
+            info = info["entries"][0]
+        if not info:
+            continue
+
+        results.append(_normalize_track(info, query))
 
     return results
 
-async def get_playlist_video_urls(playlist_id: str, max_results: int = 500):
-    if not YOUTUBE_API_KEY:
-        logger.warning("[YOUTUBE API] Geen API-key gevonden in .env bestand.")
-        return []
 
-    if playlist_id.startswith("RD"):
-        logger.warning("[YOUTUBE API] RD-playlist gedetecteerd. Alleen eerste video gebruiken.")
-        return []
+async def get_audio_info_fast(playlist_url: str, max_results: int = 500):
+    """
+    Playlist fast path: return (first_tracks, rest_tracks).
+    """
+    if not _is_playlist(playlist_url):
+        single = await get_audio_info([playlist_url])
+        return single[:1], single[1:]
 
-    async with aiohttp.ClientSession() as session:
-        urls = []
-        next_page_token = None
+    try:
+        info = await _extract_info(playlist_url, dict(YDL_PLAYLIST_FLAT_OPTS))
+    except yt_dlp.utils.DownloadError:
+        info = None
 
-        while True:
-            params = {
-                'part': 'snippet',
-                'playlistId': playlist_id,
-                'maxResults': min(50, max_results - len(urls)),
-                'key': YOUTUBE_API_KEY
-            }
-            if next_page_token:
-                params['pageToken'] = next_page_token
+    if not info or "entries" not in info:
+        single = await get_audio_info([playlist_url])
+        return single[:1], []
 
-            url_debug = f"{YOUTUBE_PLAYLIST_API_URL}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
-            logger.debug(f"[YOUTUBE API] API-aanroep: {url_debug}")
-
-            async with session.get(YOUTUBE_PLAYLIST_API_URL, params=params) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning(f"[YOUTUBE API] Mislukte API-call: {resp.status} | Body: {body}")
-                    break
-
-                data = await resp.json()
-                for item in data.get('items', []):
-                    video_id = item['snippet'].get('resourceId', {}).get('videoId')
-                    if video_id:
-                        urls.append(f"https://www.youtube.com/watch?v={video_id}")
-                    if len(urls) >= max_results:
-                        break
-
-                next_page_token = data.get('nextPageToken')
-                if not next_page_token or len(urls) >= max_results:
-                    break
-
-    return urls
-
-async def extract_playlist_id(playlist_url: str):
-    parsed = urlparse(playlist_url)
-    query = parse_qs(parsed.query)
-    playlist_id = query.get("list", [None])[0]
-
-    if not playlist_id:
-        match = re.search(r"list=([a-zA-Z0-9_-]+)", playlist_url)
-        if match:
-            playlist_id = match.group(1)
-
-    return playlist_id
-
-async def get_audio_info_fast(playlist_url):
-    playlist_id = await extract_playlist_id(playlist_url)
-
-    if not playlist_id:
-        logger.warning("[YOUTUBE API] Kan playlist-ID niet vinden in URL")
-        return [], []
-
-    if playlist_id.startswith("RD"):
-        logger.warning("[YOUTUBE API] RD-playlist gedetecteerd. Alleen eerste video ophalen.")
-        single_result = await get_audio_info([playlist_url])
-        if not single_result:
-            return [], []
-        return single_result[:1], []
-
-    urls = await get_playlist_video_urls(playlist_id)
+    entries = _flatten(info["entries"])
+    urls = []
+    for entry in entries:
+        if not entry:
+            continue
+        if entry.get("webpage_url"):
+            urls.append(entry["webpage_url"])
+        elif entry.get("id"):
+            urls.append(f"https://www.youtube.com/watch?v={entry['id']}")
+        if len(urls) >= max_results:
+            break
 
     if not urls:
-        logger.debug("[YOUTUBE API] Geen URLs via API. Fallback naar yt-dlp enkele video extractie.")
-        single_result = await get_audio_info([playlist_url])
-        if not single_result:
-            return [], []
-        return single_result[:1], []
-
-    results = await get_audio_info(urls)
-    if not results:
         return [], []
 
-    first = results[:1]
-    rest = results[1:]
-    return first, rest
+    first = await get_audio_info([urls[0]])
+    rest = await get_audio_info(urls[1:]) if len(urls) > 1 else []
+    return first[:1], rest
